@@ -394,17 +394,18 @@
 
 # if __name__ == "__main__":
 #     run_interactive_travel_agent()
+# 
+
 import os
 import asyncio
 import psycopg
-from psycopg_pool import AsyncConnectionPool,ConnectionPool # Use AsyncPool
-from typing import Literal
+from psycopg_pool import AsyncConnectionPool  # Use AsyncPool
+from psycopg.rows import dict_row             # Required for LangGraph Async
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver # Use AsyncSaver
-from langgraph.types import Command
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
-# 1. Import your modular state and nodes
+
+# Import your modular state and nodes
 from state import AgentState
 from nodes.rewrite import rewrite_node
 from nodes.planner import planner_node
@@ -413,58 +414,60 @@ from nodes.quick_lookup import quick_lookup_node
 from nodes.synthesizer import synthesizer_node
 from nodes.human_interruptor import human_interrupter_node
 
-
 DB_URI = "postgresql://tarinijain@localhost:5432/travel_db"
 
-# 2. Setup the Synchronous Pool & Saver
-# This is what we just tested in db_test.py
-pool = ConnectionPool(conninfo=DB_URI, max_size=10)
-checkpointer = PostgresSaver(pool)
+# Connection arguments required by LangGraph Async
+connection_kwargs = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+    "row_factory": dict_row,
+}
 
-# 3. Initialize Tables (Safe to run every time)
-checkpointer.setup()
-print("✅ LangGraph Postgres Checkpointer initialized.")
-builder = StateGraph(AgentState)
+async def get_async_app():
+    """
+    Initializes the Async Pool, setup the checkpointer, 
+    and returns the compiled graph.
+    """
+    # 1. Setup the Async Pool
+    pool = AsyncConnectionPool(
+        conninfo=DB_URI, 
+        max_size=20, 
+        kwargs=connection_kwargs
+    )
+    
+    # 2. Setup the Async Saver
+    checkpointer = AsyncPostgresSaver(pool)
+    
+    # 3. Initialize Tables (Safe to run every time)
+    await checkpointer.setup()
+    
+    # 4. Build the Graph
+    builder = StateGraph(AgentState)
 
-# Add all nodes
-builder.add_node("rewrite_node", rewrite_node)
-builder.add_node("human_interrupter_node", human_interrupter_node)
-builder.add_node("planner_node", planner_node)
-builder.add_node("deep_research_node", deep_research_node)
-builder.add_node("quick_lookup_node", quick_lookup_node)
-builder.add_node("synthesizer_node", synthesizer_node)
+    builder.add_node("rewrite_node", rewrite_node)
+    builder.add_node("human_interrupter_node", human_interrupter_node)
+    builder.add_node("planner_node", planner_node)
+    builder.add_node("deep_research_node", deep_research_node)
+    builder.add_node("quick_lookup_node", quick_lookup_node)
+    builder.add_node("synthesizer_node", synthesizer_node)
 
-# 3. Define the Minimal Edge Logic
-builder.add_edge(START, "rewrite_node")
-builder.add_edge("planner_node", "deep_research_node")
-builder.add_edge("deep_research_node", "synthesizer_node")
-builder.add_edge("quick_lookup_node", "synthesizer_node")
-builder.add_edge("synthesizer_node", END)
+    builder.add_edge(START, "rewrite_node")
+    builder.add_edge("planner_node", "deep_research_node")
+    builder.add_edge("deep_research_node", "synthesizer_node")
+    builder.add_edge("quick_lookup_node", "synthesizer_node")
+    builder.add_edge("synthesizer_node", END)
 
-# 4. Compile with the ASYNC PERSISTENT checkpointer
-app = builder.compile(checkpointer=checkpointer)
+    # 5. Compile with the ASYNC checkpointer
+    app = builder.compile(checkpointer=checkpointer)
+    return app
 
-# 5. Execution Logic for Testing (Modified for Async)
-async def run_interactive_travel_agent():
-    # Ensure the pool is open
-    async with pool:
-        config = {"configurable": {"thread_id": "travel_session_2026"}}
-        
-        print("--- 🌍 Travel Agent (Postgres Persistence) ---")
-        user_query = "Plan a weekend in Alibaug."
-        
-        initial_input = {"messages": [HumanMessage(content=user_query)]}
-        
-        # Run the graph (it will save state to Postgres automatically)
-        async for event in app.astream(initial_input, config, stream_mode="values"):
-            if event.get("messages"):
-                print(f"\n[Agent]: {event['messages'][-1].content[:500]}...")
-
+# # Optional: For testing via terminal
 # if __name__ == "__main__":
-#     # If running main.py directly for testing:
-#     run_interactive_travel_agent()
-if __name__ == "__main__":
-    # To test in terminal: python main.py
-    # To run in web: chainlit run app.py
-    asyncio.run(run_interactive_travel_agent()) 
-   
+#     async def test_run():
+#         app = await get_async_app()
+#         config = {"configurable": {"thread_id": "test_123"}}
+#         inputs = {"messages": [HumanMessage(content="Plan a trip to Goa")]}
+#         # async for event in app.astream(inputs, config, stream_mode="values"):
+#         #     print(event)
+    
+#     asyncio.run(test_run())
