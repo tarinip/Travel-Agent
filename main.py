@@ -396,16 +396,15 @@
 #     run_interactive_travel_agent()
 # 
 
-import os
 import asyncio
-import psycopg
-from psycopg_pool import AsyncConnectionPool  # Use AsyncPool
-from psycopg.rows import dict_row             # Required for LangGraph Async
+from psycopg_pool import AsyncConnectionPool
+from psycopg.rows import dict_row
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver # Use AsyncSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_core.messages import HumanMessage
-
-# Import your modular state and nodes
+from langgraph.types import Command
+import uuid
+# Import your state and nodes
 from state import AgentState
 from nodes.rewrite import rewrite_node
 from nodes.planner import planner_node
@@ -414,36 +413,43 @@ from nodes.quick_lookup import quick_lookup_node
 from nodes.synthesizer import synthesizer_node
 from nodes.human_interruptor import human_interrupter_node
 
+# Database configuration
 DB_URI = "postgresql://tarinijain@localhost:5432/travel_db"
+connection_kwargs = {"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row}
 
-# Connection arguments required by LangGraph Async
-connection_kwargs = {
-    "autocommit": True,
-    "prepare_threshold": 0,
-    "row_factory": dict_row,
-}
+# --- 🛣️ Conditional Routing Logic ---
+def route_after_rewrite(state: AgentState):
+    """Decides where the graph goes after the query is rewritten/analyzed."""
+    print(state)
+    if not state.get("is_safe") or state.get("is_incomplete"):
+        return "human_interrupter_node"
+    
+    # Check the 'mode' set by rewrite_node
+    return "planner_node" if state.get("mode") == "planner" else "quick_lookup_node"
 
 async def get_async_app():
-    """
-    Initializes the Async Pool, setup the checkpointer, 
-    and returns the compiled graph.
-    """
-    # 1. Setup the Async Pool
+    # 1. Setup Postgres Pool correctly
+    # Set open=False to prevent the deprecated constructor-opening behavior
     pool = AsyncConnectionPool(
         conninfo=DB_URI, 
         max_size=20, 
-        kwargs=connection_kwargs
+        kwargs=connection_kwargs,
+        open=False  # <--- Crucial fix for the warning
     )
     
-    # 2. Setup the Async Saver
+    # 2. Explicitly open the pool and wait for it
+    await pool.open() 
+    
+    # 3. Initialize Checkpointer
     checkpointer = AsyncPostgresSaver(pool)
     
-    # 3. Initialize Tables (Safe to run every time)
+    # Ensure the internal tables exist in your Postgres DB
     await checkpointer.setup()
     
-    # 4. Build the Graph
+    # 2. Initialize the Graph Builder
     builder = StateGraph(AgentState)
 
+    # 3. Add all Modular Nodes
     builder.add_node("rewrite_node", rewrite_node)
     builder.add_node("human_interrupter_node", human_interrupter_node)
     builder.add_node("planner_node", planner_node)
@@ -451,17 +457,99 @@ async def get_async_app():
     builder.add_node("quick_lookup_node", quick_lookup_node)
     builder.add_node("synthesizer_node", synthesizer_node)
 
+    # 4. Define the Connections (Edges)
     builder.add_edge(START, "rewrite_node")
+
+    # Conditional branching from Rewrite
+    builder.add_conditional_edges(
+        "rewrite_node",
+        route_after_rewrite,
+        {
+            "human_interrupter_node": "human_interrupter_node",
+            "planner_node": "planner_node",
+            "quick_lookup_node": "quick_lookup_node"
+        }
+    )
+
+    # Recovery Loop: If human provides info, go back to rewrite for re-validation
+    builder.add_edge("human_interrupter_node", "rewrite_node")
+
+    # Planner Branch: Plan -> Deep Research -> Final Answer
     builder.add_edge("planner_node", "deep_research_node")
     builder.add_edge("deep_research_node", "synthesizer_node")
+
+    # Quick Branch: Search -> Final Answer
     builder.add_edge("quick_lookup_node", "synthesizer_node")
+
+    # Finish the workflow
     builder.add_edge("synthesizer_node", END)
 
-    # 5. Compile with the ASYNC checkpointer
-    app = builder.compile(checkpointer=checkpointer)
-    return app
+    # 5. Compile the App
+    return builder.compile(checkpointer=checkpointer)
+async def run_interactive_test():
+    """
+    Test loop for the Travel Architect.
+    It automatically detects if the agent is waiting for clarification.
+    """
+    app = await get_async_app()
+    
+    # Using a fixed thread_id so the DB remembers you if you restart
+    config = {"configurable": {"thread_id": "test_session_2026"}}
 
-# # Optional: For testing via terminal
+    print("\n🌍 --- Travel Architect Terminal ---")
+    print("Commands: 'exit' to quit, '/reset' for a new trip\n")
+
+    while True:
+        # 1. Fetch current graph state
+        state = await app.aget_state(config)
+        
+        # 2. Dynamic Prompting: If graph is paused (next is not empty), get the AI's question
+        if state.next:
+            # We pull the question generated by your rewrite_node
+            agent_question = state.values.get("rewritten_query", "Could you provide more details?")
+            prompt = f"\n🤖 AGENT: {agent_question}\n🧑 Your Response: "
+        else:
+            prompt = "\n🧑 Plan your journey: "
+
+        user_input = input(prompt).strip()
+
+        # Handle Commands
+        if not user_input: continue
+        if user_input.lower() in ["exit", "quit"]: break
+        if user_input.lower() == "/reset":
+            config["configurable"]["thread_id"] = str(uuid.uuid4())
+            print("✨ Conversation reset. Starting fresh!")
+            continue
+
+        # 3. Decision: Resume vs Start New
+        if state.next:
+            # Send the answer to the waiting 'interrupt()' in human_interrupter_node
+            payload = Command(resume=user_input)
+        else:
+            # Start a fresh workflow turn
+            payload = {"messages": [HumanMessage(content=user_input)]}
+
+        # 4. Stream and Process Results
+        print("⚙️  Processing...")
+        async for mode, content in app.astream(payload, config, stream_mode=["updates", "messages"]):
+            if mode == "updates":
+                node_name = list(content.keys())[0]
+                print(f"📍 Node: {node_name}")
+                
+            elif mode == "messages":
+                chunk, metadata = content
+                # Stream the synthesizer output token by token
+                if metadata.get("langgraph_node") == "synthesizer_node":
+                    print(chunk.content, end="", flush=True)
+        
+        print("\n" + "—"*40)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_interactive_test())
+    except KeyboardInterrupt:
+        print("\n👋 Test cancelled.")
+
 # if __name__ == "__main__":
 #     async def test_run():
 #         app = await get_async_app()

@@ -732,134 +732,373 @@
 # #     except Exception as e:
 # #         if status_msg.id: await status_msg.remove()
 # #         await cl.Message(content=f"🚨 Error: {str(e)}").send()
+# import chainlit as cl
+# import uuid
+# from langchain_core.messages import HumanMessage
+# from langgraph.types import Command
+# from main import get_async_app 
+
+# @cl.on_chat_start
+# async def on_chat_start():
+#     try:
+#         # 1. Initialize the Graph
+#         app = await get_async_app()
+#         cl.user_session.set("graph_app", app)
+        
+#         # 2. Get User with Safety Guard
+#         user = cl.user_session.get("user")
+        
+#         # Check if user is None (happens if auth isn't finished or session is stale)
+#         if not user:
+#             # Fallback to a guest ID or show a friendly error
+#             username = "Guest"
+#         else:
+#             username = user.identifier
+
+#         # 3. Setup Persistence Config
+#         thread_id = str(uuid.uuid4())
+#         config = {
+#             "configurable": {
+#                 "thread_id": thread_id, 
+#                 "user": username  # Using our safe username variable
+#             }
+#         }
+        
+#         cl.user_session.set("config", config)
+#         cl.user_session.set("task_log", [])
+        
+#         await cl.Message(content=f"🌍 **Welcome, {username}!** Ready to plan your journey!").send()
+        
+#     except Exception as e:
+#         print(f"Detailed Init Error: {e}")
+#         await cl.Message(content=f"❌ Initialization Error: {str(e)}").send()
+
+# @cl.on_message
+# async def on_message(message: cl.Message):
+#     app = cl.user_session.get("graph_app")
+#     config = cl.user_session.get("config")
+#     task_log = cl.user_session.get("task_log", [])
+
+#     state = await app.aget_state(config)
+#     print(state)
+    
+#     # Check if we are resuming or starting new
+#     if state.next and "human_interrupter_node" in state.next:
+#         input_data = Command(resume=message.content)
+#     else:
+#         input_data = {"messages": [HumanMessage(content=message.content)]}
+
+#     status_msg = cl.Message(content="⚙️ **Thinking...**")
+#     await status_msg.send()
+    
+#     final_msg = cl.Message(content="")
+#     final_shown = False
+#     interrupt_content = None
+
+#     # --- THE FIX: MANAGE THE STREAM LIFECYCLE ---
+#     stream = app.astream(input_data, config, stream_mode=["updates", "messages"])
+
+#     try:
+#         async for mode, content in stream:
+#             if mode == "updates":
+#                 node_name = list(content.keys())[0]
+#                 output = content[node_name]
+                
+#                 if not output or not isinstance(output, dict):
+#                     continue
+                
+#                 # 1. Handle Interrupts (Store content and BREAK)
+#                 if node_name == "human_interrupter_node":
+#                     if "messages" in output and output["messages"]:
+#                         interrupt_content = output["messages"][-1].content
+#                     elif "rewritten_query" in output:
+#                         interrupt_content = output["rewritten_query"]
+#                     break # Stop the generator naturally
+
+#                 # 2. Update status labels
+#                 labels = {
+#                     "rewrite_node": "📝 Refining...",
+#                     "planner_node": "📅 Planning...",
+#                     "deep_research_node": "🔍 Researching..."
+#                 }
+#                 if node_name in labels:
+#                     status_msg.content = labels[node_name]
+#                     await status_msg.update()
+
+#                 # 3. Task logging
+#                 task = output.get("active_task_description")
+#                 if task and str(task).lower() != "none" and task not in task_log:
+#                     task_log.append(task)
+
+#             elif mode == "messages":
+#                 chunk, metadata = content
+#                 if metadata.get("langgraph_node") == "synthesizer_node":
+#                     if not final_msg.content:
+#                         if status_msg.id: await status_msg.remove()
+#                         await final_msg.send()
+#                     await final_msg.stream_token(chunk.content)
+#                     final_shown = True
+#     finally:
+#         # EXTREMELY IMPORTANT: Force the generator to close
+#         await stream.aclose()
+
+#     # --- FINAL UI UPDATES (After stream is closed) ---
+#     if interrupt_content:
+#         if status_msg.id: await status_msg.remove()
+#         await cl.Message(content=f"👋 **Wait! I need details:**\n\n{interrupt_content}").send()
+#         return
+
+#     if final_msg.content:
+#         await final_msg.update()
+    
+#     if not final_shown:
+#         final_state = await app.aget_state(config)
+#         msgs = final_state.values.get("messages", [])
+#         if msgs:
+#             if status_msg.id: await status_msg.remove()
+#             await cl.Message(content=msgs[-1].content).send()
+
+#     # Show history log
+#     cl.user_session.set("task_log", task_log)
+#     if task_log:
+#         async with cl.Step(name="Research History") as step:
+#             step.output = "\n".join([f"✅ {t}" for t in task_log])
 import chainlit as cl
-import uuid
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
-from main import get_async_app 
+from main import get_async_app
+import uuid
 
 @cl.on_chat_start
 async def on_chat_start():
-    try:
-        # 1. Initialize the Graph
-        app = await get_async_app()
-        cl.user_session.set("graph_app", app)
-        
-        # 2. Get User with Safety Guard
-        user = cl.user_session.get("user")
-        
-        # Check if user is None (happens if auth isn't finished or session is stale)
-        if not user:
-            # Fallback to a guest ID or show a friendly error
-            username = "Guest"
-        else:
-            username = user.identifier
-
-        # 3. Setup Persistence Config
-        thread_id = str(uuid.uuid4())
-        config = {
-            "configurable": {
-                "thread_id": thread_id, 
-                "user": username  # Using our safe username variable
-            }
-        }
-        
-        cl.user_session.set("config", config)
-        cl.user_session.set("task_log", [])
-        
-        await cl.Message(content=f"🌍 **Welcome, {username}!** Ready to plan your journey!").send()
-        
-    except Exception as e:
-        print(f"Detailed Init Error: {e}")
-        await cl.Message(content=f"❌ Initialization Error: {str(e)}").send()
+    app = await get_async_app()
+    cl.user_session.set("graph_app", app)
+    cl.user_session.set("config", {"configurable": {"thread_id": str(uuid.uuid4())}})
+    await cl.Message(content="🌍 **Travel Architect 2026 Online.** How can I help?").send()
 
 @cl.on_message
 async def on_message(message: cl.Message):
     app = cl.user_session.get("graph_app")
     config = cl.user_session.get("config")
-    task_log = cl.user_session.get("task_log", [])
-
-    state = await app.aget_state(config)
-    print(state)
     
-    # Check if we are resuming or starting new
-    if state.next and "human_interrupter_node" in state.next:
-        input_data = Command(resume=message.content)
-    else:
-        input_data = {"messages": [HumanMessage(content=message.content)]}
+    state = await app.aget_state(config)
+    input_data = Command(resume=message.content) if state.next else {"messages": [HumanMessage(content=message.content)]}
 
+    # Initialize UI components
     status_msg = cl.Message(content="⚙️ **Thinking...**")
     await status_msg.send()
     
+    plan_msg = cl.Message(content="")
     final_msg = cl.Message(content="")
+    reasoning_step = cl.Step(name="Agent Reasoning", type="run")
+    
+    reasoning_content = ""
+    plan_started = False
     final_shown = False
-    interrupt_content = None
+    streaming_started = False 
+    visited_nodes = set()
 
-    # --- THE FIX: MANAGE THE STREAM LIFECYCLE ---
     stream = app.astream(input_data, config, stream_mode=["updates", "messages"])
 
     try:
         async for mode, content in stream:
+            # --- MODE: UPDATES (Transitions & Events) ---
             if mode == "updates":
+                if "__interrupt__" in content:
+                    # Handle interrupts normally
+                    interrupt_val = content["__interrupt__"][0].value
+                    if status_msg.id: await status_msg.remove()
+                    await cl.Message(content=f"👋 **Need Info:** {interrupt_val}").send()
+                    return
+
                 node_name = list(content.keys())[0]
-                output = content[node_name]
-                
-                if not output or not isinstance(output, dict):
-                    continue
-                
-                # 1. Handle Interrupts (Store content and BREAK)
-                if node_name == "human_interrupter_node":
-                    if "messages" in output and output["messages"]:
-                        interrupt_content = output["messages"][-1].content
-                    elif "rewritten_query" in output:
-                        interrupt_content = output["rewritten_query"]
-                    break # Stop the generator naturally
+                node_data = content[node_name]
 
-                # 2. Update status labels
-                labels = {
-                    "rewrite_node": "📝 Refining...",
-                    "planner_node": "📅 Planning...",
-                    "deep_research_node": "🔍 Researching..."
-                }
-                if node_name in labels:
-                    status_msg.content = labels[node_name]
-                    await status_msg.update()
+                if node_name not in visited_nodes:
+                    visited_nodes.add(node_name)
+                    if "synthesizer" in node_name:
+                        if status_msg.id: await status_msg.remove()
+                    else:
+                        display_names = {
+                            "rewrite_node": "📝 Refining Query...",
+                            "planner_node": "📅 Building Itinerary...",
+                            "deep_research_node": "🔍 Deep Researching...",
+                            "quick_lookup_node": "⚡ Quick Search..."
+                        }
+                        status_msg.content = display_names.get(node_name, f"📍 Processing: {node_name}")
+                        await status_msg.update()
 
-                # 3. Task logging
-                task = output.get("active_task_description")
-                if task and str(task).lower() != "none" and task not in task_log:
-                    task_log.append(task)
+                # Stream deep research "Status" events into reasoning
+                if node_name == "deep_research_node":
+                    event = node_data.get("active_task_description") or node_data.get("status")
+                    if event:
+                        if not reasoning_step.id: await reasoning_step.send()
+                        reasoning_content += f"\n- {event}"
+                        reasoning_step.output = reasoning_content
+                        await reasoning_step.update()
 
+            # --- MODE: MESSAGES (Live Token Appending) ---
             elif mode == "messages":
                 chunk, metadata = content
-                if metadata.get("langgraph_node") == "synthesizer_node":
-                    if not final_msg.content:
-                        if status_msg.id: await status_msg.remove()
-                        await final_msg.send()
-                    await final_msg.stream_token(chunk.content)
-                    final_shown = True
+                curr_node = metadata.get("langgraph_node", "")
+
+                # A. STREAM THE PLAN (One by one / Appending)
+                if curr_node == "planner_node":
+                    if not plan_started:
+                        plan_msg.content = "### 📋 Research Strategy\n"
+                        await plan_msg.send()
+                        plan_started = True
+                    
+                    if hasattr(chunk, "content") and chunk.content:
+                        await plan_msg.stream_token(chunk.content)
+
+                # B. STREAM SEARCH QUERIES (Into Reasoning)
+                if curr_node == "deep_research_node" and hasattr(chunk, "tool_calls"):
+                    if chunk.tool_calls:
+                        if not reasoning_step.id: await reasoning_step.send()
+                        for tool in chunk.tool_calls:
+                            query = tool.get("args", {}).get("query")
+                            if query:
+                                reasoning_content += f"\n- 🔍 *Searching:* {query}"
+                                reasoning_step.output = reasoning_content
+                                await reasoning_step.update()
+
+                # C. STREAM FINAL SYNTHESIS
+                if "synthesizer" in curr_node:
+                    is_chunk = type(chunk).__name__.endswith("Chunk")
+                    if is_chunk:
+                        if not streaming_started:
+                            if status_msg.id: await status_msg.remove()
+                            if reasoning_step.id: await reasoning_step.update()
+                            await final_msg.send()
+                            streaming_started = True
+                            final_shown = True
+                        if chunk.content:
+                            await final_msg.stream_token(chunk.content)
+
     finally:
-        # EXTREMELY IMPORTANT: Force the generator to close
         await stream.aclose()
-
-    # --- FINAL UI UPDATES (After stream is closed) ---
-    if interrupt_content:
-        if status_msg.id: await status_msg.remove()
-        await cl.Message(content=f"👋 **Wait! I need details:**\n\n{interrupt_content}").send()
-        return
-
-    if final_msg.content:
-        await final_msg.update()
-    
-    if not final_shown:
-        final_state = await app.aget_state(config)
-        msgs = final_state.values.get("messages", [])
-        if msgs:
+        # Final UI Cleanup
+        if plan_started: await plan_msg.update()
+        if final_shown: await final_msg.update()
+        elif not final_shown:
             if status_msg.id: await status_msg.remove()
-            await cl.Message(content=msgs[-1].content).send()
+            final_state = await app.aget_state(config)
+            msgs = final_state.values.get("messages", [])
+            if msgs and msgs[-1].type == "ai":
+                await cl.Message(content=msgs[-1].content).send()
+                
+# async def on_message(message: cl.Message):
+#     # 1. SETUP & SESSION RETRIEVAL
+#     app = cl.user_session.get("graph_app")
+#     config = cl.user_session.get("config")
+    
+#     # Check graph state for interrupts
+#     state = await app.aget_state(config)
+#     input_data = Command(resume=message.content) if state.next else {"messages": [HumanMessage(content=message.content)]}
 
-    # Show history log
-    cl.user_session.set("task_log", task_log)
-    if task_log:
-        async with cl.Step(name="Research History") as step:
-            step.output = "\n".join([f"✅ {t}" for t in task_log])
+#     # Node Name to Friendly UI Labels
+#     display_names = {
+#         "rewrite_node": "📝 Refining Your Query...",
+#         "planner_node": "📅 Building Your Itinerary...",
+#         "deep_research_node": "🔍 Searching 2026 Data...",
+#         "quick_lookup_node": "⚡ Quick Look-up...",
+#         "synthesizer": "✍️ Finalizing Itinerary..."
+#     }
+
+#     # Initialize Message Containers
+#     status_msg = cl.Message(content="⚙️ **Thinking...**")
+#     await status_msg.send()
+    
+#     # We create separate objects for the Plan and the Final Answer
+#     plan_msg = cl.Message(content="")
+#     final_msg = cl.Message(content="")
+    
+#     final_shown = False
+#     streaming_started = False 
+#     visited_nodes = set()
+
+#     # 2. THE STREAMING LOOP
+#     stream = app.astream(input_data, config, stream_mode=["updates", "messages"])
+
+#     try:
+#         async for mode, content in stream:
+#             # --- MODE: UPDATES (Logic, State changes, and Labels) ---
+#             if mode == "updates":
+#                 if "__interrupt__" in content:
+#                     interrupt_val = content["__interrupt__"][0].value
+#                     if status_msg.id: await status_msg.remove()
+#                     await cl.Message(content=f"👋 **Need Info:** {interrupt_val}").send()
+#                     return
+
+#                 node_name = list(content.keys())[0]
+#                 node_data = content[node_name]
+
+#                 # A. Handle the Planner Output (The "Plan" Message)
+#                 if node_name == "planner_node" and "plan" in node_data:
+#                     tasks = node_data["plan"]
+#                     if tasks:
+#                         plan_header = "### 📋 Research Strategy\n"
+#                         # Use bullet points for better Markdown visibility
+#                         plan_body = "\n".join([f"- {task}" for task in tasks])
+#                         plan_msg.content = f"{plan_header}{plan_body}"
+                        
+#                         if not plan_msg.id:
+#                             await plan_msg.send()
+#                         else:
+#                             await plan_msg.update()
+
+#                 # B. Update UI Status Labels
+#                 if node_name not in visited_nodes:
+#                     visited_nodes.add(node_name)
+                    
+#                     # If we reach synthesis, hide the "Thinking" bubble
+#                     if "synthesizer" in node_name:
+#                         if status_msg.id: await status_msg.remove()
+#                     else:
+#                         label = display_names.get(node_name, f"📍 Processing: {node_name.replace('_', ' ').title()}")
+#                         status_msg.content = label
+#                         await status_msg.update()
+
+#             # --- MODE: MESSAGES (Token Streaming for Final Result) ---
+#             elif mode == "messages":
+#                 chunk, metadata = content
+#                 curr_node = metadata.get("langgraph_node", "")
+
+#                 # Focus only on the Synthesizer for final tokens
+#                 if "synthesizer" in curr_node:
+#                     is_chunk = type(chunk).__name__.endswith("Chunk")
+
+#                     if is_chunk:
+#                         if not streaming_started:
+#                             # Clean up status bubble just before streaming starts
+#                             if status_msg.id: await status_msg.remove()
+#                             await final_msg.send()
+#                             streaming_started = True
+#                             final_shown = True
+                        
+#                         if chunk.content:
+#                             await final_msg.stream_token(chunk.content)
+                    
+#                     # Fallback if model doesn't support streaming chunks
+#                     elif not streaming_started and not final_shown:
+#                         if status_msg.id: await status_msg.remove()
+#                         final_msg.content = chunk.content
+#                         await final_msg.send()
+#                         final_shown = True
+
+#     except Exception as e:
+#         await cl.Message(content=f"❌ **Graph Error:** {str(e)}").send()
+        
+#     finally:
+#         await stream.aclose()
+#         # Final UI Sync
+#         if final_shown and final_msg.id:
+#             await final_msg.update()
+#         elif not final_shown:
+#             # Emergency Recovery: Pull last AI message if stream failed
+#             if status_msg.id: await status_msg.remove()
+#             final_state = await app.aget_state(config)
+#             msgs = final_state.values.get("messages", [])
+#             if msgs and msgs[-1].type == "ai":
+#                 await cl.Message(content=msgs[-1].content).send()

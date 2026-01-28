@@ -1,48 +1,60 @@
-from typing import Dict, Any
+import os
 from datetime import datetime
+from typing import Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from state import AgentState
 from dotenv import load_dotenv
-load_dotenv()
-# Load environment variables
 
+load_dotenv()
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 def planner_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Creates a research plan and provides filtered booking links.
+    """
     query = state.get("rewritten_query", "")
     current_date = datetime.now().strftime("%A, %B %d, %Y")
     
-    # Analyze the query for passenger types
-    is_senior = any(k in query.lower() for k in ["senior", "elder", "parents"])
-    is_kid = any(k in query.lower() for k in ["kid", "child", "baby", "toddler"])
-
+    # Use the flags already extracted by rewrite_node
+    is_senior = state.get("has_seniors", False)
+    is_kid = state.get("has_kids", False)
+    
+    # Extract destination/dates for link construction (Assuming they exist in state)
+    # If your state doesn't have these yet, we use the query as a fallback
+    destination = state.get("destination", "India")
+    
     print(f"--- 📅 PLANNER: Strategy for {query} ---")
 
     planner_prompt = (
         f"Today is {current_date}. You are a Travel Logistics Architect.\n"
         f"USER REQUEST: {query}\n"
         f"CONSTRAINTS: Senior Citizen: {is_senior}, Kids Friendly: {is_kid}\n\n"
-        "Task: Create a detailed research plan to find the following specific details:\n"
-        
-        "1. FLIGHTS: Direct routes, airline options, and current prices for the specified dates. "
-        f"{'Focus on airlines with best wheelchair assistance/short boarding.' if is_senior else ''}\n"
-        
-        "2. TRAINS: Identify specific train names (e.g., Vande Bharat, Rajdhani), travel classes (1AC/2AC), "
-        "and seat availability for the route.\n"
-        
-        "3. ROOMS: Find specific hotel names with rates. "
-        f"{'Must include hotels with elevators and grab-bars.' if is_senior else ''} "
-        f"{'Must include resorts with kids clubs/play areas.' if is_kid else ''}\n"
-        
-        "Output: Return a list of 5-7 specific search queries that will help find these EXACT prices and availability."
+        "TASK: Create a list of  search queries to find real-time prices for flights, "
+        "trains , and hotels for this trip.\n\n"
+        "Output ONLY the search queries, one per line."
     )
 
     response = llm.invoke([HumanMessage(content=planner_prompt)])
-    # We split the response into a list of tasks for the research node
     tasks = response.content.strip().split("\n")
-    
+
+    # --- 🔗 DYNAMIC BOOKING LINKS ---
+    # Constructing a basic filtered MakeMyTrip search URL (Standard format)
+    # Note: Real production links usually require city codes, but we can use search terms
+    mmt_hotel_link = f"https://www.makemytrip.com/hotels/hotel-listing/?city={destination}"
+    mmt_flight_link = f"https://www.makemytrip.com/flights/"
+    irctc_link = "https://www.irctc.co.in/nget/train-search"
+
+    booking_footer = (
+        "\n\n### 🔗 Quick Booking Links:\n"
+        f"* **Trains:** [Book on IRCTC Official]({irctc_link})\n"
+        f"* **Hotels in {destination.title()}:** [View on MakeMyTrip]({mmt_hotel_link})\n"
+        f"* **Flights:** [Check Availability on MakeMyTrip]({mmt_flight_link})"
+    )
+
     return {
         "plan": tasks,
-        "current_task": "PLAN_READY"
+        "active_task_description": f"Created {len(tasks)} research tasks with accessibility filters.",
+        # We store the booking info in research_data so the synthesizer can show it to the user
+        "research_data": [f"BOOKING_LINKS: {booking_footer}"]
     }

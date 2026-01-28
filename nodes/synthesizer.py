@@ -1,43 +1,69 @@
 from typing import Dict, Any
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from state import AgentState
 from dotenv import load_dotenv
+
 load_dotenv()
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
-
+# Using gpt-4o for the final synthesis to ensure high-quality formatting
+llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
 
 def synthesizer_node(state: AgentState) -> Dict[str, Any]:
-    # Pulling state from previous research/lookup nodes
+    """
+    Final node that formats all research data into a polished travel itinerary.
+    """
+    # 1. Pull necessary data from state
     research_results = state.get("research_data", [])
     query = state.get("rewritten_query", "")
+    mode = state.get("mode", "quick") # <--- FIX: Added this line
     
-    # 2026 Conversion Rate
+    # Use the 2026 rate
     INR_RATE = 90.87
 
-    system_message = (
-        "You are a Senior Travel Concierge. Your task is to transform raw research data "
-        "into a professional, highly presentable travel guide.\n\n"
-        f"### CURRENCY: Always convert USD ($) to INR (₹) using the rate 1 USD = {INR_RATE}.\n\n"
-        "### PRESENTATION RULES:\n"
-        "1. DYNAMIC DURATION: Create a day-by-day itinerary for the EXACT number of days "
-        "mentioned in the user query. Do not default to 3 days.\n"
-        "2. NARRATIVE FLOW: Use headers, bold text, and bullet points to make it scannable.\n"
-        "3. LOGISTICS: Clearly present the flight, train, and hotel details found in research "
-        "with their booking links and converted INR prices.\n"
-        "4. NO PLACEHOLDERS: If data is missing, omit that section. Do not make up facts.\n"
-        "5. CLOSING: End with a single clear question asking if they want to proceed with booking."
-    )
+    # 2. Dynamic System Prompt based on Mode
+    if mode == "quick":
+        system_prompt = (
+            "You are a concise travel expert. Your goal is to provide a direct answer "
+            "to the user's question based ONLY on the provided research.\n\n"
+            "STRICT RULES:\n"
+            "1. Answer the question directly and stop.\n"
+            "2. Do NOT generate a multi-day itinerary or suggestions unless the user explicitly asked for one.\n"
+            "3. If pricing is involved, use the conversion 1 USD = 90.87 INR."
+        )
+    else:
+        system_prompt = (
+            "You are a Senior Travel Concierge. Your task is to transform raw research data "
+            "into a professional, highly presentable travel guide for 2026.\n\n"
+            f"### CURRENCY CONVERSION: Use the rate 1 USD = {INR_RATE} INR. "
+            "Always show prices in ₹ (INR) first, followed by ($) in parentheses.\n\n"
+            "### PRESENTATION RULES:\n"
+            "1. DURATION: Create a day-by-day itinerary based on the user's requested timeframe.\n"
+            "2. SCANNABILITY: Use Markdown (##, ###, **bold**) and tables where appropriate.\n"
+            "3. ACCESSIBILITY: If 'has_kids' or 'has_seniors' flags are set, highlight specific amenities "
+            "(e.g., 'Stroller friendly', 'Elevator access').\n"
+            "4. LINKS: Ensure relevant booking links (MakeMyTrip/IRCTC) are clearly displayed.\n"
+            "5. NO HALLUCINATIONS: Do not invent specific hotel prices if research data is missing."
+        )
 
-    # Join list of research strings into a single context block
-    research_context = "\n".join(research_results) if isinstance(research_results, list) else research_results
-    
-    user_message = HumanMessage(content=(
-        f"User Query: {query}\n\n"
-        f"Raw Research State: {research_context}"
-    ))
+    # 3. Format Context
+    research_context = "\n---\n".join(research_results) if isinstance(research_results, list) else str(research_results)
+    profile_context = f"Group Profile: Kids={state.get('has_kids')}, Seniors={state.get('has_seniors')}"
 
-    response = llm.invoke([system_message, user_message])
+    # 4. Prepare Message for LLM
+    full_prompt = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=(
+            f"ORIGINAL QUERY: {query}\n"
+            f"TRAVELER PROFILE: {profile_context}\n\n"
+            f"RAW RESEARCH FINDINGS:\n{research_context}"
+        ))
+    ]
+
+    # 5. Invoke and Return
+    response = llm.invoke(full_prompt)
     
-    return {"messages": [response]}
+    return {
+        "messages": [AIMessage(content=response.content)],
+        "active_task_description": "Final response generated."
+    }
