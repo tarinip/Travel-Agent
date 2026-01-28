@@ -18,11 +18,11 @@ class RewriteNodeOutput(BaseModel):
     is_incomplete: bool = Field(description="True if Destination, Dates, Budget, or No. of people are missing.")
     reason: str = Field(description="The reason if the query is unsafe or incomplete.")
     mode: str = Field(description="Either 'planner' for full trips or 'quick' for simple questions.")
-    
+
     # New fields for passenger profile
     has_kids: bool = Field(description="True if the group includes children or infants.")
     has_seniors: bool = Field(description="True if the group includes elderly travelers.")
-    
+
     rewritten_query: str = Field(description="A search-optimized version of the user request.")
 
 def rewrite_node(state: AgentState) -> Dict[str, Any]:
@@ -49,8 +49,8 @@ def rewrite_node(state: AgentState) -> Dict[str, Any]:
         "4. MODE SELECTION:\n"
         "   - MODE: QUICK (Simple questions, single tips).\n"
         "   - MODE: PLANNER (Full trips, itineraries, logistics).\n"
-        "5. REWRITE: Provide a search-optimized version of the query." 
-     )
+        "5. REWRITE: Provide a search-optimized version of the query."
+    )
 
     # 2. Invoke Structured LLM
     structured_llm = llm.with_structured_output(RewriteNodeOutput)
@@ -61,7 +61,7 @@ def rewrite_node(state: AgentState) -> Dict[str, Any]:
         content = f"Rewrite this last message to clarify the user intent. You must go throught the entire message history to get the full context:\n{last_message.content}"
         message = HumanMessage(content=content, additional_kwargs=last_message.additional_kwargs)
         messages[-1] = message
-    
+
     analysis = structured_llm.invoke([
         SystemMessage(content=system_prompt),
         *messages

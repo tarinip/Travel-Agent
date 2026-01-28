@@ -11,18 +11,18 @@ load_dotenv()
 # Initialize the LLM
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-def quick_lookup_node(state: AgentState) -> Dict[str, Any]:
+async def quick_lookup_node(state: AgentState) -> Dict[str, Any]:
     """
-    Strictly uses the DuckDuckGo Instant Answer API and returns 
+    Strictly uses the DuckDuckGo Instant Answer API and returns
     state updates. Routing is handled in main.py.
     """
     query = state.get("rewritten_query", "")
     current_date = datetime.now().strftime("%A, %B %d, %Y")
-    
+
     print(f"--- ⚡ INSTANT LOOKUP: {query} (Date: {current_date}) ---")
 
     # 1. Fetch raw data from the Instant Answer API
-    api_response = instant_answer_tool(query)
+    api_response = await instant_answer_tool(query)
 
     # 2. Synthesize with Date Context using the LLM
     prompt = (
@@ -36,7 +36,7 @@ def quick_lookup_node(state: AgentState) -> Dict[str, Any]:
     )
 
     # Generate the synthesized response
-    response = llm.invoke(prompt)
+    response = await llm.ainvoke(prompt)
 
     # 3. Return State Updates
     # We add the result to 'messages' so the user can see it,

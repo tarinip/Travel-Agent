@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from typing import Dict, Any
 from langchain_openai import ChatOpenAI
@@ -9,21 +10,26 @@ from dotenv import load_dotenv
 load_dotenv()
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
+def clean_list(text):
+    text = re.sub(r"^\d+[.]\s*", "", text)
+    text = text[:1].upper() + text[1:]
+    return text
+
 def planner_node(state: AgentState) -> Dict[str, Any]:
     """
     Creates a research plan and provides filtered booking links.
     """
     query = state.get("rewritten_query", "")
     current_date = datetime.now().strftime("%A, %B %d, %Y")
-    
+
     # Use the flags already extracted by rewrite_node
     is_senior = state.get("has_seniors", False)
     is_kid = state.get("has_kids", False)
-    
+
     # Extract destination/dates for link construction (Assuming they exist in state)
     # If your state doesn't have these yet, we use the query as a fallback
     destination = state.get("destination", "India")
-    
+
     print(f"--- 📅 PLANNER: Strategy for {query} ---")
 
     planner_prompt = (
@@ -37,12 +43,13 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
 
     response = llm.invoke([HumanMessage(content=planner_prompt)])
     tasks = response.content.strip().split("\n")
+    tasks = [clean_list(t) for t in tasks if t != '```']
 
     # --- 🔗 DYNAMIC BOOKING LINKS ---
     # Constructing a basic filtered MakeMyTrip search URL (Standard format)
     # Note: Real production links usually require city codes, but we can use search terms
     mmt_hotel_link = f"https://www.makemytrip.com/hotels/hotel-listing/?city={destination}"
-    mmt_flight_link = f"https://www.makemytrip.com/flights/"
+    mmt_flight_link = "https://www.makemytrip.com/flights/"
     irctc_link = "https://www.irctc.co.in/nget/train-search"
 
     booking_footer = (
