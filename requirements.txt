@@ -4,3 +4,6 @@ langgraph
 langchain-core
 langchain-tools
 python-dotenv
+httpx
+beautifulsoup4
+trafilatura
